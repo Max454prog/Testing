@@ -11,11 +11,31 @@ const firebaseConfig = {
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, where, orderBy, onSnapshot, serverTimestamp, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, Timestamp } from 'firebase/firestore';
+import { getFirestore, enableIndexedDbPersistence, collection, addDoc, query, where, orderBy, onSnapshot, serverTimestamp, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, Timestamp } from 'firebase/firestore';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// ============ Офлайн-режим: постоянный локальный кэш Firestore ============
+// Без этого приложение при потере интернета просто зависало бы на пустом
+// экране/бесконечной загрузке. С включённым IndexedDB-кэшем Firestore сам
+// сохраняет на устройстве все чаты и сообщения, которые уже были получены
+// хотя бы раз, и onSnapshot-подписки продолжают отдавать эти данные из
+// локального хранилища, даже когда сети совсем нет — можно открыть
+// приложение офлайн и читать переписку. Как только сеть появляется снова,
+// Firestore тихо досинхронизируется и дозагрузит новое. Дополнительный код
+// в остальных частях приложения для этого не нужен.
+enableIndexedDbPersistence(db).catch(err => {
+  if (err.code === 'failed-precondition') {
+    // Несколько вкладок «Искры» открыты одновременно — офлайн-кэш можно
+    // держать только в одной вкладке сразу. Само приложение продолжает
+    // работать нормально, просто в лишних вкладках не будет офлайн-режима.
+    console.warn('Офлайн-кэш недоступен: открыто несколько вкладок «Искры».');
+  } else if (err.code === 'unimplemented') {
+    console.warn('Этот браузер не поддерживает офлайн-кэш Firestore.');
+  }
+});
 
 // DOM-элементы
 const splashScreen = document.getElementById('splash-screen');
@@ -111,6 +131,12 @@ const qrScanBtn = document.getElementById('qr-scan-btn');
 const qrVideo = document.getElementById('qr-video');
 const qrScanCanvas = document.getElementById('qr-scan-canvas');
 const qrScanStatus = document.getElementById('qr-scan-status');
+const offlineBanner = document.getElementById('offline-banner');
+const avatarViewerModal = document.getElementById('avatar-viewer-modal');
+const avatarViewerImage = document.getElementById('avatar-viewer-image');
+const avatarViewerName = document.getElementById('avatar-viewer-name');
+const avatarViewerClose = document.getElementById('avatar-viewer-close');
+const sidebarAvatarWrap = document.querySelector('#user-info .avatar-wrap');
 
 let currentUser = null;
 let currentUserData = { nickname: '', avatarUrl: '', animation: 'none' };
@@ -133,10 +159,19 @@ let qrCodeInstance = null; // экземпляр библиотеки qrcodejs �
 let qrScanStream = null;   // MediaStream активной камеры сканера
 let qrScanRAF = null;      // id requestAnimationFrame цикла сканирования
 const QR_CONTACT_PREFIX = 'iskra-contact:';
+let statusByUserMap = new Map(); // uid -> последний активный статус (для рамок на аватарках)
+const chatMembersCache = new Map(); // chatId -> массив участников (для галочек "доставлено/прочитано")
+let activeChatMessagesCache = new Map(); // id сообщения -> данные, только для открытого сейчас чата
 
 const STATUS_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 // ============ Splash screen ============
+// БАГФИКС (лишняя задержка): раньше сплэш держался минимум 1300мс на КАЖДОМ
+// запуске, даже если Firebase Auth уже успел ответить почти мгновенно (что
+// обычно и происходит благодаря локальному кэшу сессии). Это выглядело как
+// «тормозит» при входе. Оставляем небольшой минимум (350мс), чтобы не было
+// резкого мигания на очень быстрых устройствах, но не заставляем ждать
+// секунду с лишним впустую.
 let splashMinTimeDone = false;
 let authStateKnown = false;
 function maybeHideSplash() {
@@ -144,7 +179,7 @@ function maybeHideSplash() {
     splashScreen.classList.add('hidden');
   }
 }
-setTimeout(() => { splashMinTimeDone = true; maybeHideSplash(); }, 1300);
+setTimeout(() => { splashMinTimeDone = true; maybeHideSplash(); }, 350);
 
 // Вспомогательные функции
 function showScreen(screen) {
@@ -217,6 +252,20 @@ function renderAnimatedEmoji(container, emoji, { loop = false } = {}) {
 }
 
 const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%23343450"/%3E%3C/svg%3E';
+// БАГФИКС (битая ссылка при просмотре своей пустой аватарки): у элементов
+// <img src=""> (sidebar-avatar, chat-header-avatar до первой подгрузки
+// данных) чтение свойства .src в браузере возвращает НЕ пустую строку, а
+// полный адрес самой открытой HTML-страницы — такая особенность спецификации
+// для img с пустым атрибутом src. Из-за этого `imgEl.src || DEFAULT_AVATAR`
+// всегда считался "заполненным" и никогда не подставлял запасную картинку —
+// при клике на свою аватарку без фото профиля (новая функция просмотра фото)
+// открывалась бы битая ссылка на HTML вместо DEFAULT_AVATAR. Проверяем
+// именно HTML-атрибут через getAttribute(), а не резолвленное свойство.
+function safeAvatarSrc(imgEl) {
+  if (!imgEl) return DEFAULT_AVATAR;
+  const attr = imgEl.getAttribute('src');
+  return attr ? imgEl.src : DEFAULT_AVATAR;
+}
 
 function getEmojiOnlyInfo(text) {
   const stripped = (text || '').replace(/\s+/g, '');
@@ -250,24 +299,51 @@ function setLoginMode(mode) {
     authToggle.innerHTML = 'Уже есть аккаунт? <a href="#" id="switch-to-login">Войти</a>';
   }
   const newLink = document.querySelector('#auth-toggle a');
-  if (newLink) newLink.addEventListener('click', e => { e.preventDefault(); clearAuthError(); setLoginMode(!isLoginMode); });
+  if (newLink) newLink.addEventListener('click', e => { e.preventDefault(); if (authInProgress) return; clearAuthError(); setLoginMode(!isLoginMode); });
 }
 
 // Аутентификация
+// БАГФИКС (гонка при регистрации): раньше registerUser() сам писал профиль
+// в Firestore СРАЗУ после создания аккаунта в Auth. Но onAuthStateChanged
+// срабатывает почти в тот же момент и тоже вызывает loadUserData(), которая
+// создаёт документ, если его ещё нет. Оба процесса независимо проверяли
+// "есть ли документ?" и оба могли решить, что его нет, и одновременно его
+// создать — а порядок, чей вариант окажется последним (и, значит, победит),
+// не гарантирован. В редких случаях никнейм и телефон, введённые при
+// регистрации, перезаписывались дефолтным «Пользователь» без телефона.
+// Теперь документ профиля создаётся только в ОДНОМ месте — в loadUserData(),
+// которую в любом случае всегда вызывает onAuthStateChanged. registerUser()
+// лишь передаёт туда никнейм/телефон через pendingRegistrationProfile.
+let pendingRegistrationProfile = null;
 async function registerUser(email, password, nickname, phone) {
-  const cred = await createUserWithEmailAndPassword(auth, email, password);
-  await setDoc(doc(db, 'users', cred.user.uid), { nickname, email, phone: phone || '', avatarUrl: '', animation: 'none', online: true, phoneReminderSent: !!phone, createdAt: serverTimestamp() });
-  return cred.user;
+  pendingRegistrationProfile = { nickname, phone: phone || '' };
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    return cred.user;
+  } catch (e) {
+    pendingRegistrationProfile = null;
+    throw e;
+  }
 }
 async function loginUser(email, password) {
   const cred = await signInWithEmailAndPassword(auth, email, password);
   return cred.user;
 }
-async function loadUserData(uid) {
-  const snap = await getDoc(doc(db, 'users', uid));
+async function loadUserData(uid, email) {
+  const ref = doc(db, 'users', uid);
+  const snap = await getDoc(ref);
   if (snap.exists()) return snap.data();
-  const def = { nickname: 'Пользователь', email: '', phone: '', avatarUrl: '', animation: 'none', online: true, phoneReminderSent: false };
-  await setDoc(doc(db, 'users', uid), def);
+  const profile = pendingRegistrationProfile;
+  pendingRegistrationProfile = null;
+  const def = {
+    nickname: (profile && profile.nickname) || 'Пользователь',
+    email: email || '',
+    phone: (profile && profile.phone) || '',
+    avatarUrl: '', animation: 'none', online: true,
+    phoneReminderSent: !!(profile && profile.phone),
+    createdAt: serverTimestamp()
+  };
+  await setDoc(ref, def);
   return def;
 }
 
@@ -371,12 +447,32 @@ function computeIsOnline(data) {
   const lastMs = data.lastActive.toMillis ? data.lastActive.toMillis() : new Date(data.lastActive).getTime();
   return (Date.now() - lastMs) < PRESENCE_TIMEOUT_MS;
 }
+// БАГФИКС/ФИЧА (последнее время входа): раньше при отсутствии пользователя
+// в сети везде просто показывалась статичная надпись «не в сети» — как в
+// WhatsApp/Telegram здесь не хватало времени последнего захода. Данные для
+// этого уже были: поле lastActive обновляется на сервере при каждом выходе
+// из сети (см. setOnline(false) ниже). Теперь мы форматируем его в читаемую
+// строку вида «был(а) в сети сегодня в 14:32», «...вчера в...» или с датой.
+function formatLastSeen(data) {
+  if (!data || !data.lastActive) return 'не в сети';
+  const lastMs = data.lastActive.toMillis ? data.lastActive.toMillis() : new Date(data.lastActive).getTime();
+  const d = new Date(lastMs);
+  const now = new Date();
+  const timeStr = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `был(а) в сети сегодня в ${timeStr}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `был(а) в сети вчера в ${timeStr}`;
+  const dateStr = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return `был(а) в сети ${dateStr} в ${timeStr}`;
+}
 function refreshPresenceUI(uid) {
   const isOnline = computeIsOnline(presenceDataCache.get(uid));
   document.querySelectorAll(`.status-dot[data-uid="${uid}"]`).forEach(dot => dot.classList.toggle('online', isOnline));
   if (chatHeaderStatusDot.dataset.uid === uid) {
     chatHeaderStatusDot.classList.toggle('online', isOnline);
-    chatHeaderSub.textContent = isOnline ? 'в сети' : 'не в сети';
+    chatHeaderSub.textContent = isOnline ? 'в сети' : formatLastSeen(presenceDataCache.get(uid));
     chatHeaderSub.classList.toggle('offline', !isOnline);
   }
 }
@@ -410,8 +506,9 @@ function stopPresenceHeartbeat() {
 }
 document.addEventListener('visibilitychange', () => {
   if (!currentUser) return;
-  if (document.hidden) setOnline(false);
-  else setOnline(true);
+  if (document.hidden) { setOnline(false); return; }
+  setOnline(true);
+  activeChatMessagesCache.forEach((data, id) => maybeMarkRead(id, data, activeChatId));
 });
 window.addEventListener('beforeunload', () => { setOnline(false); });
 
@@ -484,7 +581,8 @@ function renderStagedChips() {
     chip.innerHTML = `<img src="${escapeHtml(user.avatarUrl || DEFAULT_AVATAR)}" alt=""><span>${escapeHtml(user.nickname || 'Пользователь')}</span>`;
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
-    removeBtn.textContent = '✕';
+    removeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
+    removeBtn.setAttribute('aria-label', 'Убрать участника');
     removeBtn.addEventListener('click', () => removeStagedMember(user.uid));
     chip.appendChild(removeBtn);
     stagedMembersEl.appendChild(chip);
@@ -682,6 +780,7 @@ function updateChatHeaderMeta(meta) {
     chatHeaderAvatarWrap.style.display = 'flex';
     chatHeaderStatusDot.dataset.uid = meta.otherUid;
     chatHeaderStatusDot.classList.remove('online');
+    applyStatusRing(chatHeaderAvatarWrap, meta.otherUid);
     unsubscribeHeaderPresence = onSnapshot(doc(db, 'users', meta.otherUid), snap => {
       const data = snap.exists() ? snap.data() : {};
       chatHeaderAvatar.src = data.avatarUrl || DEFAULT_AVATAR;
@@ -703,6 +802,119 @@ function updateChatHeaderMeta(meta) {
   }
 }
 
+// ============ Рамка статуса вокруг аватарки (как в WhatsApp) ============
+// Зелёная рамка — есть новый (ещё не просмотренный вами) статус, синяя — вы
+// его уже смотрели. Если статуса нет — рамки не будет, а клик по аватарке
+// просто открывает фото крупным планом.
+function applyStatusRing(wrapEl, uid) {
+  if (!wrapEl) return;
+  const status = uid ? statusByUserMap.get(uid) : null;
+  wrapEl.classList.toggle('has-status', !!status);
+  wrapEl.classList.remove('status-ring-new', 'status-ring-viewed');
+  if (status) {
+    const viewed = !!(status.viewedBy && currentUser && status.viewedBy[currentUser.uid]);
+    wrapEl.classList.add(viewed ? 'status-ring-viewed' : 'status-ring-new');
+  }
+  if (uid) wrapEl.dataset.statusUid = uid; else delete wrapEl.dataset.statusUid;
+}
+function refreshAllStatusRings() {
+  document.querySelectorAll('.chat-item .avatar-wrap').forEach(wrap => {
+    const item = wrap.closest('.chat-item');
+    applyStatusRing(wrap, item ? item.dataset.otherUid : null);
+  });
+  if (chatHeaderAvatarWrap.style.display !== 'none') {
+    applyStatusRing(chatHeaderAvatarWrap, chatHeaderStatusDot.dataset.uid || null);
+  }
+  if (sidebarAvatarWrap && currentUser) applyStatusRing(sidebarAvatarWrap, currentUser.uid);
+}
+// Клик по аватарке: если у человека есть активный статус — сразу открываем
+// его (минуя список статусов), если статуса нет — просто показываем фото
+// профиля крупным планом, как в WhatsApp.
+function handleAvatarTap(uid, imgSrc, name) {
+  const status = uid ? statusByUserMap.get(uid) : null;
+  if (status) {
+    openStatusViewer(status);
+  } else {
+    openAvatarViewer(imgSrc, name);
+  }
+}
+function openAvatarViewer(src, name) {
+  avatarViewerImage.src = src || DEFAULT_AVATAR;
+  avatarViewerName.textContent = name || '';
+  avatarViewerModal.style.display = 'flex';
+}
+function closeAvatarViewer() {
+  avatarViewerModal.style.display = 'none';
+}
+avatarViewerClose.addEventListener('click', closeAvatarViewer);
+avatarViewerModal.addEventListener('click', (e) => { if (e.target === avatarViewerModal) closeAvatarViewer(); });
+chatHeaderAvatarWrap.addEventListener('click', () => {
+  const uid = chatHeaderStatusDot.dataset.uid || null;
+  handleAvatarTap(uid, safeAvatarSrc(chatHeaderAvatar), currentChatTitle.textContent);
+});
+if (sidebarAvatarWrap) {
+  sidebarAvatarWrap.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!currentUser) return;
+    handleAvatarTap(currentUser.uid, safeAvatarSrc(sidebarAvatar), currentUserData.nickname || 'Мой профиль');
+  });
+}
+
+// ============ Статусы доставки сообщений (точки, как в WhatsApp) ============
+// Одна точка — сообщение улетело на сервер и доставляется. Две синие точки —
+// доставлено всем получателям, но ещё не прочитано. Две зелёные точки — все
+// получатели открывали чат и видели сообщение. Показывается только на СВОИХ
+// сообщениях в личных и групповых чатах (в общем чате/поддержке получателей
+// слишком много и они неизвестны заранее — там точек нет).
+function getChatRecipients(chatId) {
+  if (!currentUser || chatId === 'general' || chatId === 'support') return [];
+  const members = chatMembersCache.get(chatId) || [];
+  return members.filter(uid => uid !== currentUser.uid);
+}
+function computeTickState(data, chatId) {
+  const recipients = getChatRecipients(chatId);
+  if (recipients.length === 0) return null;
+  const delivered = recipients.filter(uid => data.deliveredTo && data.deliveredTo[uid]).length;
+  const read = recipients.filter(uid => data.readBy && data.readBy[uid]).length;
+  if (read === recipients.length) return 'read';
+  if (delivered === recipients.length) return 'delivered';
+  return 'sending';
+}
+function renderMessageTicks(msgEl, data, chatId) {
+  const isOwn = currentUser && data.userId === currentUser.uid;
+  let ticksEl = msgEl.querySelector('.msg-ticks');
+  if (!isOwn) { if (ticksEl) ticksEl.remove(); return; }
+  const state = computeTickState(data, chatId);
+  if (!state) { if (ticksEl) ticksEl.remove(); return; }
+  if (!ticksEl) {
+    ticksEl = document.createElement('span');
+    ticksEl.className = 'msg-ticks';
+    const header = msgEl.querySelector('.message-header');
+    if (header) header.appendChild(ticksEl);
+  }
+  ticksEl.className = `msg-ticks state-${state}`;
+  ticksEl.innerHTML = state === 'sending' ? '<span class="tick-dot"></span>' : '<span class="tick-dot"></span><span class="tick-dot"></span>';
+  ticksEl.title = state === 'sending' ? 'Доставляется' : state === 'delivered' ? 'Доставлено' : 'Прочитано';
+}
+// Получатель отмечает у себя чужое сообщение как доставленное — сработает,
+// когда сообщение реально дошло до его устройства (пришло через подписку).
+function maybeMarkDelivered(id, data) {
+  if (!currentUser || data.system || data.userId === currentUser.uid) return;
+  if (data.deliveredTo && data.deliveredTo[currentUser.uid]) return;
+  updateDoc(doc(db, 'messages', id), { [`deliveredTo.${currentUser.uid}`]: true }).catch(() => {});
+}
+// И как прочитанное — только пока получатель реально смотрит именно этот
+// чат и вкладка/приложение активны (не свёрнуты).
+function maybeMarkRead(id, data, chatId) {
+  if (!currentUser || data.system || data.userId === currentUser.uid) return;
+  if (chatId !== activeChatId || document.hidden) return;
+  if (data.readBy && data.readBy[currentUser.uid]) return;
+  updateDoc(doc(db, 'messages', id), {
+    [`readBy.${currentUser.uid}`]: true,
+    [`deliveredTo.${currentUser.uid}`]: true
+  }).catch(() => {});
+}
+
 function subscribeToChatList() {
   if (unsubscribeChatList) { unsubscribeChatList(); unsubscribeChatList = null; }
   const qRef = query(collection(db, 'chats'), where('members', 'array-contains', currentUser.uid), orderBy('updatedAt', 'desc'));
@@ -710,9 +922,11 @@ function subscribeToChatList() {
     chatList.querySelectorAll('.dynamic-chat-item').forEach(el => el.remove());
     snap.forEach(docSnap => {
       const data = docSnap.data();
+      chatMembersCache.set(docSnap.id, data.members || []); // для галочек «доставлено/прочитано»
       chatList.appendChild(renderChatListItem(docSnap.id, data));
     });
     refreshActiveChatHighlight();
+    refreshAllStatusRings();
   }, (err) => {
     console.error('Ошибка подписки на список чатов (проверьте составной индекс Firestore: members array-contains + updatedAt desc):', err);
   });
@@ -737,7 +951,7 @@ function renderChatListItem(chatId, data) {
     name = data.name || 'Группа';
     preview = data.lastMessage?.text || `${(data.members || []).length} участников`;
     li.dataset.memberCount = (data.members || []).length;
-    iconHtml = `<span class="chat-icon">👥</span>`;
+    iconHtml = `<span class="chat-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none"><circle cx="9" cy="8.2" r="3" stroke="currentColor" stroke-width="1.8"/><circle cx="16.3" cy="9.6" r="2.4" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.7-3 3-4.6 5.5-4.6s4.8 1.6 5.5 4.6M14.3 19c.4-1.9 1.7-3.3 3.4-3.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>`;
   }
 
   li.innerHTML = `
@@ -746,6 +960,10 @@ function renderChatListItem(chatId, data) {
       <span class="chat-name">${escapeHtml(name)}</span>
       <span class="chat-preview">${escapeHtml(preview)}</span>
     </div>`;
+  if (data.type === 'private') {
+    const wrap = li.querySelector('.avatar-wrap');
+    applyStatusRing(wrap, li.dataset.otherUid || null);
+  }
   return li;
 }
 
@@ -790,17 +1008,23 @@ createGroupBtn.addEventListener('click', createGroupChat);
 function subscribeToMessages(chatId) {
   if (unsubscribeMessages) { unsubscribeMessages(); unsubscribeMessages = null; }
   messagesList.innerHTML = '';
+  activeChatMessagesCache = new Map();
   let firstBatch = true;
   const qRef = query(collection(db, 'messages'), where('chatId','==',chatId), orderBy('timestamp','asc'));
   unsubscribeMessages = onSnapshot(qRef, snap => {
     const wasAtBottom = isScrolledToBottom();
     let added = false;
     snap.docChanges().forEach(change => {
+      const data = change.doc.data();
       if (change.type === 'added') {
-        addMessageToUI(change.doc.id, change.doc.data());
+        addMessageToUI(change.doc.id, data, chatId);
         added = true;
+        activeChatMessagesCache.set(change.doc.id, data);
+        maybeMarkDelivered(change.doc.id, data);
+        maybeMarkRead(change.doc.id, data, chatId);
       } else if (change.type === 'modified') {
-        updateMessageTimeInUI(change.doc.id, change.doc.data());
+        activeChatMessagesCache.set(change.doc.id, data);
+        updateMessageInUI(change.doc.id, data, chatId);
       }
     });
     if (added && (firstBatch || wasAtBottom)) scrollToBottom();
@@ -809,13 +1033,14 @@ function subscribeToMessages(chatId) {
     console.error('Ошибка подписки на сообщения (проверьте составной индекс Firestore: chatId == + timestamp asc):', err);
   });
 }
-function updateMessageTimeInUI(id, data) {
+function updateMessageInUI(id, data, chatId) {
   const el = document.getElementById(`msg-${id}`);
   if (!el) return;
   const timeEl = el.querySelector('.message-time');
   if (timeEl) timeEl.textContent = formatTime(data.timestamp);
+  renderMessageTicks(el, data, chatId);
 }
-function addMessageToUI(id, data) {
+function addMessageToUI(id, data, chatId) {
   if (document.getElementById(`msg-${id}`)) return;
 
   if (data.system) {
@@ -883,6 +1108,7 @@ function addMessageToUI(id, data) {
   msgEl.appendChild(avatarWrap);
   msgEl.appendChild(body);
   messagesList.appendChild(msgEl);
+  renderMessageTicks(msgEl, data, chatId);
 
   if (data.userId) ensureUserStatusListener(data.userId);
 }
@@ -1055,24 +1281,54 @@ saveSettingsBtn.addEventListener('click', async () => {
 });
 
 // Обработчики авторизации
+// БАГФИКС (двойная отправка формы): раньше кнопки «Войти»/«Зарегистрироваться»
+// оставались активными всё время запроса к Firebase — если у человека был
+// медленный интернет, он мог кликнуть ещё раз (или ещё несколько раз),
+// запуская параллельно несколько попыток входа/регистрации одновременно.
+// Это могло приводить к путанным ошибкам и лишним попыткам создать аккаунт.
+// Теперь кнопка блокируется и показывает «Входим…»/«Создаём аккаунт…» на
+// время запроса, а после завершения (успех или ошибка) — разблокируется.
+let authInProgress = false;
 authForm.addEventListener('submit', async (e) => {
-  e.preventDefault(); clearAuthError();
+  e.preventDefault();
+  if (authInProgress) return;
+  clearAuthError();
   const email = emailInput.value.trim();
   const password = passwordInput.value.trim();
   const nickname = nicknameInput.value.trim();
   const regPhone = regPhoneInput.value.trim();
   if (!email||!password) return displayAuthError('Введите email и пароль');
   if (!isLoginMode && !nickname) return displayAuthError('Придумайте никнейм');
+
+  const activeBtn = isLoginMode ? loginBtn : registerBtn;
+  const originalLabel = activeBtn.textContent;
+  authInProgress = true;
+  loginBtn.disabled = true;
+  registerBtn.disabled = true;
+  activeBtn.textContent = isLoginMode ? 'Входим…' : 'Создаём аккаунт…';
   try {
     isLoginMode ? await loginUser(email, password) : await registerUser(email, password, nickname, regPhone);
   } catch (err) {
-    let msg='Ошибка'; if (err.code) {
-      if (err.code.includes('email-already')) msg='Email занят';
-      else if (err.code.includes('invalid-email')) msg='Неверный email';
-      else if (err.code.includes('weak-password')) msg='Пароль минимум 6 символов';
-      else if (err.code.includes('user-not-found')||err.code.includes('wrong-password')||err.code.includes('invalid-credential')) msg='Неверные данные';
-    }
+    // БАГФИКС (неполные сообщения об ошибках): раньше нераспознанные коды
+    // ошибок Firebase (нет сети, слишком много попыток, забаненный аккаунт
+    // и т.д.) показывали голое «Ошибка» без объяснений. Разобрал основные
+    // коды по отдельности, чтобы человек понимал, что реально произошло.
+    let msg = 'Что-то пошло не так. Попробуйте ещё раз.';
+    const code = err.code || '';
+    if (code.includes('email-already')) msg = 'Этот email уже зарегистрирован. Попробуйте войти.';
+    else if (code.includes('invalid-email')) msg = 'Неверный формат email';
+    else if (code.includes('weak-password')) msg = 'Пароль слишком простой — минимум 6 символов';
+    else if (code.includes('missing-password')) msg = 'Введите пароль';
+    else if (code.includes('user-not-found') || code.includes('wrong-password') || code.includes('invalid-credential')) msg = 'Неверный email или пароль';
+    else if (code.includes('user-disabled')) msg = 'Этот аккаунт заблокирован';
+    else if (code.includes('too-many-requests')) msg = 'Слишком много попыток. Подождите немного и попробуйте снова';
+    else if (code.includes('network-request-failed')) msg = 'Нет соединения с интернетом. Проверьте сеть и попробуйте снова';
     displayAuthError(msg);
+  } finally {
+    authInProgress = false;
+    loginBtn.disabled = false;
+    registerBtn.disabled = false;
+    activeBtn.textContent = originalLabel;
   }
 });
 logoutBtn.addEventListener('click', async ()=>{
@@ -1100,7 +1356,12 @@ avatarInput.addEventListener('change', async (e) => {
   if (!file) return;
   if (!file.type.startsWith('image/')) { alert('Пожалуйста, выберите файл изображения.'); avatarInput.value = ''; return; }
   try {
-    const dataUrl = await compressImage(file);
+    // ФИЧА (качество аватарки): раньше аватар сжимался до 200×200 при качестве
+    // JPEG 0.7 — на больших экранах и retina-дисплеях это выглядело мыльно.
+    // Теперь используем более крупный исходник (480×480) и качество 0.85 —
+    // сама аватарка в интерфейсе рисуется всё того же небольшого размера,
+    // но выглядит заметно чётче на дисплеях с высокой плотностью пикселей.
+    const dataUrl = await compressImage(file, 480, 480, 0.85);
     profileAvatarPreview.src = dataUrl;
   } catch (err) {
     alert('Не удалось загрузить изображение. Попробуйте другой файл.');
@@ -1122,6 +1383,18 @@ saveProfileBtn.addEventListener('click', async ()=>{
 
 // Переключение чата
 chatList.addEventListener('click', e=>{
+  const avatarWrap = e.target.closest('.avatar-wrap');
+  if (avatarWrap) {
+    const parentItem = avatarWrap.closest('.chat-item');
+    if (parentItem && parentItem.dataset.type === 'private') {
+      e.stopPropagation();
+      const uid = parentItem.dataset.otherUid || null;
+      const imgEl = avatarWrap.querySelector('img');
+      const name = parentItem.querySelector('.chat-name')?.textContent || 'Пользователь';
+      handleAvatarTap(uid, safeAvatarSrc(imgEl), name);
+      return;
+    }
+  }
   const item = e.target.closest('.chat-item');
   if(!item) return;
   const id = item.dataset.chatId;
@@ -1156,8 +1429,11 @@ function subscribeToStatuses() {
   const qRef = query(collection(db, 'statuses'), where('expireAt', '>', nowTs), orderBy('expireAt', 'desc'));
   unsubscribeStatuses = onSnapshot(qRef, snap => {
     currentStatuses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    statusByUserMap = new Map();
+    currentStatuses.forEach(s => { if (!statusByUserMap.has(s.userId)) statusByUserMap.set(s.userId, s); });
     if (statusModal.style.display !== 'none') renderStatusModalContent();
     refreshOpenStatusViewer();
+    refreshAllStatusRings();
   }, (err) => {
     console.error('Ошибка подписки на статусы:', err);
   });
@@ -1217,7 +1493,7 @@ function renderStatusModalContent() {
     myRow.addEventListener('click', () => openStatusViewer(myLatest));
   } else {
     myRow.innerHTML = `
-      <div class="status-add-icon">＋</div>
+      <div class="status-add-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
       <div class="status-info">
         <span class="status-name">Добавить статус</span>
         <span class="status-meta">Текст или фото, будет видно 24 часа</span>
@@ -1430,12 +1706,13 @@ onAuthStateChanged(auth, async user => {
   authStateKnown = true;
   if (user) {
     currentUser = user;
-    currentUserData = await loadUserData(user.uid);
+    currentUserData = await loadUserData(user.uid, user.email);
     updateSidebarProfile();
-    if (selfStatusDot) selfStatusDot.classList.add('online');
+    if (selfStatusDot) { selfStatusDot.classList.add('online'); selfStatusDot.dataset.uid = user.uid; }
     showScreen(chatScreen);
     subscribeToMessages(activeChatId);
     subscribeToChatList();
+    subscribeToStatuses();
     applyCurrentAnimation();
     startPresenceHeartbeat();
     maybeSendPhoneReminder(user.uid, currentUserData);
@@ -1445,8 +1722,12 @@ onAuthStateChanged(auth, async user => {
     if(unsubscribeChatList){unsubscribeChatList();unsubscribeChatList=null;}
     if(unsubscribeHeaderPresence){unsubscribeHeaderPresence();unsubscribeHeaderPresence=null;}
     stopStatusSubscription();
+    statusByUserMap = new Map();
+    chatMembersCache.clear();
+    activeChatMessagesCache = new Map();
     closeStatusModal();
     closeStatusViewer();
+    closeAvatarViewer();
     clearAnimation();
     stopPresenceHeartbeat();
     clearUserStatusListeners();
@@ -1464,6 +1745,20 @@ onAuthStateChanged(auth, async user => {
   maybeHideSplash();
 });
 setLoginMode(true);
+
+// ============ Офлайн-баннер ============
+// Показываем небольшую полоску сверху, когда пропадает связь — чтобы было
+// понятно, что показываются сохранённые локально данные, а не зависшее
+// приложение. Firestore-подписки при этом продолжают работать из кэша (см.
+// enableIndexedDbPersistence выше), поэтому уже открытые чаты и сообщения
+// остаются читаемыми даже без интернета.
+function updateOfflineBanner() {
+  if (!offlineBanner) return;
+  offlineBanner.style.display = navigator.onLine ? 'none' : 'flex';
+}
+window.addEventListener('online', updateOfflineBanner);
+window.addEventListener('offline', updateOfflineBanner);
+updateOfflineBanner();
 
 // ============ Регистрация Service Worker + автообнаружение обновлений ============
 let swAlreadyReloading = false;

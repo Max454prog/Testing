@@ -119,6 +119,8 @@ h1, h2, h3, .brand h2 { font-family:'Sora', 'Inter', sans-serif; }
   font-family:inherit; display:inline-flex; align-items:center; justify-content:center; gap:6px;
 }
 .btn:active { transform:scale(0.97); }
+.btn:disabled { opacity:0.6; cursor:not-allowed; transform:none; }
+.btn:disabled:active { transform:none; }
 .btn-primary { background:var(--accent-grad); color:white; flex:1; box-shadow:0 6px 18px rgba(124,108,255,0.3); }
 .btn-secondary { background:transparent; color:var(--accent-1); border:1px solid var(--border-strong); flex:1; }
 .auth-toggle { text-align:center; font-size:0.88rem; color:var(--text-secondary); }
@@ -303,11 +305,27 @@ h1, h2, h3, .brand h2 { font-family:'Sora', 'Inter', sans-serif; }
 
 /* ============ Background particle animations ============ */
 .animation-container { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:0; overflow:hidden; }
-.particle { position:absolute; animation:fall linear infinite; }
+/* БАГФИКС (анимация дождя/фона зависала и копилась в DOM): раньше у .particle
+   стояло `animation: fall linear infinite` — но при бесконечном повторе
+   событие 'animationend' в JS (см. startAnimation()) вообще никогда не
+   срабатывает браузером (оно происходит только когда анимация ДОканчивается,
+   а у infinite финала нет). Из-за этого JS-код, который должен был удалять
+   каждую упавшую частицу из DOM, никогда не запускался — частицы копились
+   бесконечно (особенно заметно на дожде: 40 капель заново каждые 2 секунды,
+   ни одна старая не удалялась), нагружая CPU/GPU и подсаживая батарею.
+   Теперь анимация проигрывается один раз (без infinite), animationend
+   срабатывает как положено, и частица корректно удаляет сама себя. */
+.particle { position:absolute; animation-timing-function:linear; animation-fill-mode:forwards; }
+.particle.sakura { animation-name:fall; background:#ffb3d1; width:10px; height:10px; border-radius:50% 0 50% 0; opacity:0.75; }
+/* БАГФИКС (дождь визуально "крутился"): капли дождя использовали ту же
+   траекторию fall, что и лепестки/листья — с вращением на 720°. Капли,
+   кувыркающиеся колесом при падении, выглядят как нелепая графическая
+   ошибка, а не как дождь. У капель теперь отдельная анимация — падение
+   строго вниз без вращения, как и должен выглядеть дождь. */
+.particle.rain { animation-name:fallStraight; background:linear-gradient(#7eb8da, transparent); width:2px; height:22px; border-radius:1px; opacity:0.5; }
+.particle.leaves { animation-name:fall; background:#d99c4a; width:14px; height:14px; border-radius:0 50% 0 50%; opacity:0.85; }
 @keyframes fall { to { transform:translateY(105vh) rotate(720deg); opacity:0; } }
-.particle.sakura { background:#ffb3d1; width:10px; height:10px; border-radius:50% 0 50% 0; opacity:0.75; }
-.particle.rain { background:linear-gradient(#7eb8da, transparent); width:2px; height:22px; border-radius:1px; opacity:0.5; }
-.particle.leaves { background:#d99c4a; width:14px; height:14px; border-radius:0 50% 0 50%; opacity:0.85; }
+@keyframes fallStraight { to { transform:translateY(105vh); opacity:0; } }
 
 /* ============ Modals ============ */
 .modal {
@@ -357,6 +375,51 @@ h1, h2, h3, .brand h2 { font-family:'Sora', 'Inter', sans-serif; }
   position:absolute; inset:18px; border:2px solid rgba(255,255,255,0.85); border-radius:16px;
   box-shadow:0 0 0 999px rgba(0,0,0,0.25); pointer-events:none;
 }
+
+/* ============ Рамка статуса вокруг аватарки (как в WhatsApp) ============ */
+.avatar-wrap.has-status { cursor:pointer; }
+.avatar-wrap.has-status .avatar-small,
+.avatar-wrap.has-status .chat-avatar { box-sizing:border-box; }
+.avatar-wrap.status-ring-new .avatar-small,
+.avatar-wrap.status-ring-new .chat-avatar {
+  border-color:var(--online);
+  box-shadow:0 0 0 2px var(--bg-primary), 0 0 0 4px var(--online);
+}
+.avatar-wrap.status-ring-viewed .avatar-small,
+.avatar-wrap.status-ring-viewed .chat-avatar {
+  border-color:var(--accent-2);
+  box-shadow:0 0 0 2px var(--bg-primary), 0 0 0 4px var(--accent-2);
+}
+#chat-header-avatar-wrap, #user-info .avatar-wrap { cursor:pointer; }
+
+/* ============ Точки доставки/прочтения сообщений ============ */
+.msg-ticks { display:inline-flex; align-items:center; gap:3px; margin-left:2px; }
+.msg-ticks .tick-dot { width:6px; height:6px; border-radius:50%; background:var(--text-tertiary); display:block; }
+.msg-ticks.state-sending .tick-dot { background:var(--text-tertiary); opacity:0.8; }
+.msg-ticks.state-delivered .tick-dot { background:var(--accent-2); }
+.msg-ticks.state-read .tick-dot { background:var(--online); }
+
+/* ============ Офлайн-баннер ============ */
+.offline-banner {
+  position:sticky; top:0; z-index:60; width:100%; padding:8px 14px; text-align:center;
+  font-size:0.82rem; font-weight:600; color:#1c1c1c; background:#ffcf4d;
+  display:flex; align-items:center; justify-content:center; gap:6px;
+}
+
+/* ============ Просмотр аватарки крупным планом ============ */
+.avatar-viewer-modal {
+  background:rgba(5,5,12,0.92); align-items:center; justify-content:center; padding:24px;
+}
+.avatar-viewer-content { display:flex; flex-direction:column; align-items:center; gap:14px; max-width:420px; width:100%; }
+.avatar-viewer-content img {
+  width:min(80vw, 340px); height:min(80vw, 340px); border-radius:50%; object-fit:cover;
+  box-shadow:0 10px 40px rgba(0,0,0,0.5); border:3px solid rgba(255,255,255,0.12);
+}
+.avatar-viewer-name { color:#fff; font-weight:700; font-size:1.1rem; text-align:center; }
+.avatar-viewer-close {
+  position:absolute; top:18px; right:18px; color:#fff; background:rgba(255,255,255,0.1);
+}
+.avatar-viewer-close:hover { background:rgba(255,255,255,0.2); }
 
 .mode-toggle { display:flex; gap:8px; width:100%; background:var(--bg-primary); padding:4px; border-radius:var(--radius-sm); border:1px solid var(--border); }
 .mode-btn {

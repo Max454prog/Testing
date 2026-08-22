@@ -14,9 +14,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
+
+  <div id="offline-banner" class="offline-banner" style="display:none">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="M3 3l18 18M8.5 8.9A9.9 9.9 0 0112 8c3.6 0 6.9 1.5 9.3 4M5 12.6A9.9 9.9 0 018 10.2M12 18.7a1.6 1.6 0 100-3.2 1.6 1.6 0 000 3.2z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Нет соединения — показаны сохранённые чаты и сообщения
+  </div>
 
   <!-- Splash screen -->
   <div id="splash-screen" class="splash">
@@ -109,12 +114,18 @@
               <h2>Искра</h2>
             </div>
             <div class="sidebar-header-actions">
-              <button id="new-chat-btn" class="icon-btn" title="Новый чат" aria-label="Новый чат">＋</button>
-              <button id="close-sidebar" class="icon-btn" aria-label="Закрыть меню">✕</button>
+              <button id="new-chat-btn" class="icon-btn" title="Новый чат" aria-label="Новый чат">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+              <button id="close-sidebar" class="icon-btn" aria-label="Закрыть меню">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
             </div>
           </div>
           <button id="status-nav-btn" class="chat-item status-nav-btn" type="button">
-            <span class="chat-icon">📸</span>
+            <span class="chat-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
+            </span>
             <div class="chat-item-text">
               <span class="chat-name">Статусы <span class="beta-badge">БЕТА</span></span>
               <span class="chat-preview">Поделитесь моментом на 24 часа</span>
@@ -122,14 +133,18 @@
           </button>
           <ul class="chat-list" id="chat-list">
             <li class="chat-item active" data-chat-id="general">
-              <span class="chat-icon">💬</span>
+              <span class="chat-icon">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M4 12a8 8 0 1114.2 5l1.3 3.5-3.8-1.1A8 8 0 014 12z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+              </span>
               <div class="chat-item-text">
                 <span class="chat-name">Общий чат</span>
                 <span class="chat-preview">Все на связи</span>
               </div>
             </li>
             <li class="chat-item" data-chat-id="support">
-              <span class="chat-icon">🛟</span>
+              <span class="chat-icon">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.8" stroke="currentColor" stroke-width="1.8"/><path d="M6.6 6.6l2.9 2.9M17.4 6.6l-2.9 2.9M6.6 17.4l2.9-2.9M17.4 17.4l-2.9-2.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
               <div class="chat-item-text">
                 <span class="chat-name">Чат поддержки</span>
                 <span class="chat-preview">Мы всегда на связи</span>
@@ -146,7 +161,9 @@
             </div>
             <div class="sidebar-actions">
               <button id="profile-btn" class="btn btn-profile">Профиль</button>
-              <button id="settings-btn" class="btn btn-icon-profile" title="Настройки" aria-label="Настройки">⚙️</button>
+              <button id="settings-btn" class="btn btn-icon-profile" title="Настройки" aria-label="Настройки">
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V19.6a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1.08-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H4.4a2 2 0 110-4h.09a1.65 1.65 0 001.51-1.08 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h.06A1.65 1.65 0 0011 4.4V4a2 2 0 114 0v.09a1.65 1.65 0 001 1.51h.06a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.06A1.65 1.65 0 0019.6 11H20a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+              </button>
             </div>
             <button id="logout-btn" class="btn btn-logout">Выйти</button>
           </div>
@@ -154,7 +171,9 @@
 
         <main class="main-chat" id="main-chat">
           <header class="chat-header">
-            <button id="menu-toggle" class="icon-btn hamburger" aria-label="Открыть меню">☰</button>
+            <button id="menu-toggle" class="icon-btn hamburger" aria-label="Открыть меню">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
             <div class="avatar-wrap" id="chat-header-avatar-wrap" style="display:none">
               <img id="chat-header-avatar" class="avatar-small" src="" alt="">
               <span class="status-dot" id="chat-header-status-dot"></span>
@@ -218,7 +237,9 @@
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M15 5 8 12l7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <h3 id="qr-modal-title">Мой QR-код</h3>
-          <button id="qr-close-btn" class="icon-btn" type="button" aria-label="Закрыть">✕</button>
+          <button id="qr-close-btn" class="icon-btn" type="button" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
         </div>
 
         <div id="qr-my-view" class="qr-view">
@@ -228,7 +249,10 @@
           </div>
           <div class="qr-user-name" id="qr-user-name"></div>
           <p class="qr-hint">Покажите этот код другу — он отсканирует его и сразу откроет с вами чат</p>
-          <button id="qr-scan-btn" class="btn btn-primary full-width" type="button">📷 Сканировать код</button>
+          <button id="qr-scan-btn" class="btn btn-primary full-width" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M4 8a2 2 0 012-2h1.2l.8-1.4A2 2 0 019.7 3.6h4.6a2 2 0 011.7 1l.8 1.4H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.2" stroke="currentColor" stroke-width="1.8"/></svg>
+            Сканировать код
+          </button>
         </div>
 
         <div id="qr-scan-view" class="qr-view" style="display:none">
@@ -239,6 +263,17 @@
           <p class="qr-hint" id="qr-scan-status">Наведите камеру на QR-код собеседника</p>
           <canvas id="qr-scan-canvas" style="display:none"></canvas>
         </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно просмотра фото профиля крупным планом (как в WhatsApp) -->
+    <div id="avatar-viewer-modal" class="modal avatar-viewer-modal" style="display:none">
+      <button id="avatar-viewer-close" class="icon-btn avatar-viewer-close" type="button" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="avatar-viewer-content">
+        <img id="avatar-viewer-image" src="" alt="">
+        <div class="avatar-viewer-name" id="avatar-viewer-name"></div>
       </div>
     </div>
 
@@ -330,7 +365,9 @@
           <span id="status-viewer-name"></span>
           <span id="status-viewer-time"></span>
         </div>
-        <button id="status-viewer-close" class="icon-btn" type="button" aria-label="Закрыть">✕</button>
+        <button id="status-viewer-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
       </div>
       <div class="status-viewer-content">
         <img id="status-viewer-image" src="" alt="" style="display:none">
