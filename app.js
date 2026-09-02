@@ -1803,6 +1803,18 @@ onAuthStateChanged(auth, async user => {
     updateSidebarProfile();
     if (selfStatusDot) selfStatusDot.classList.add('online');
     showScreen(chatScreen);
+    // БАГФИКС (подзаголовок шапки чата после входа): раньше при самом первом
+    // входе за сессию (без предшествующего выхода) шапка активного чата
+    // так и оставалась со статичным текстом-заглушкой из HTML ("в сети
+    // сейчас"), потому что updateChatHeaderMeta()/updateComposerAccess()
+    // вызывались только внутри selectChat() (при ручном переключении чата)
+    // и в ветке выхода из аккаунта ниже — но не здесь, при входе. Теперь
+    // состояние шапки и доступ к полю ввода синхронизируются с активным
+    // чатом сразу при входе, как и при выходе.
+    updateChatHeaderMeta(activeChatId === SUPPORT_CHAT_ID
+      ? { type: 'general', subtitle: 'Новости, обновления и исправления' }
+      : { type: 'general', subtitle: 'Открытый чат для всех' });
+    updateComposerAccess(activeChatId);
     subscribeToMessages(activeChatId);
     subscribeToTyping(activeChatId);
     subscribeToChatList();

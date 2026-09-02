@@ -471,6 +471,8 @@ async function handleRegisterEmail(text) {
     await botSay(`Похоже, это временный или ненастоящий email 🤨 Пожалуйста, укажите настоящий (осталось попыток: ${3 - state.strikes}).`);
     return;
   }
+  const prof = checkProfanity(email);
+  if (prof) { await handleProfanity(prof, 'register_email'); return; }
   regData.email = email;
   emailInput.value = email;
   stage = 'register_password_choice';
